@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Aramark Jobs Map</title>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
+    <!-- PapaParse for CSV parsing -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 100%;
+        }
+        .popup-content {
+            max-width: 300px;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .popup-content b {
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+
+    <script>
+        // Configuration
+        const JITTER_DISTANCE_FEET = 300;
+        const FEET_TO_DEGREES = 1 / 364000;
+        
+        // Fields to include in popup (partners can easily edit this list)
+        const popupFields = [
+            'job_id',
+            'title',
+            'url',
+            'location',
+            'posted_date',
+            'description',
+            'facility_name_raw',
+            'facility_name_standard',
+            'verified_facility',
+            'Geocodio Accuracy Type',
+            'Geocodio Address Line 1',
+            'Geocodio Address Line 2',
+            'Geocodio Address Line 3',
+            'Geocodio House Number',
+            'Geocodio Street',
+            'Geocodio Unit Type',
+            'Geocodio Unit Number',
+            'Geocodio City',
+            'Geocodio State',
+            'Geocodio County',
+            'Geocodio Postal Code',
+            'Geocodio Country'
+        ];
+
+        // Initialize the map
+        const map = L.map('map').setView([39.8283, -98.5795], 4); // Center of US
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Function to add jitter to duplicate coordinates
+        function addJitterToDuplicates(data) {
+            const coordMap = {};
+            
+            // Group by coordinates
+            data.forEach((row, index) => {
+                const lat = parseFloat(row['Geocodio Latitude']);
+                const lon = parseFloat(row['Geocodio Longitude']);
+                
+                if (isNaN(lat) || isNaN(lon)) return;
+                
+                const key = `${lat},${lon}`;
+                if (!coordMap[key]) {
+                    coordMap[key] = [];
+                }
+                coordMap[key].push(index);
+            });
+            
+            // Add jitter to duplicates
+            Object.values(coordMap).forEach(indices => {
+                if (indices.length > 1) {
+                    indices.slice(1).forEach(idx => {
+                        const angle = Math.random() * 2 * Math.PI;
+                        const distance = Math.random() * JITTER_DISTANCE_FEET * FEET_TO_DEGREES;
+                        
+                        const lat = parseFloat(data[idx]['Geocodio Latitude']);
+                        const lon = parseFloat(data[idx]['Geocodio Longitude']);
+                        
+                        data[idx]['Geocodio Latitude'] = lat + distance * Math.cos(angle);
+                        data[idx]['Geocodio Longitude'] = lon + distance * Math.sin(angle) / Math.cos(lat * Math.PI / 180);
+                    });
+                }
+            });
+            
+            return data;
+        }
+
+        // Function to create popup HTML
+        function createPopupHTML(row) {
+            let html = '<div class="popup-content">';
+            
+            popupFields.forEach(field => {
+                const value = row[field];
+                
+                if (value !== undefined && value !== null && value !== '') {
+                    const fieldName = field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                    
+                    if (field === 'url') {
+                        html += `<b>${fieldName}:</b> <a href="${value}" target="_blank">Link</a><br>`;
+                    } else {
+                        let valueStr = String(value);
+                        if (valueStr.length > 200) {
+                            valueStr = valueStr.substring(0, 200) + '...';
+                        }
+                        html += `<b>${fieldName}:</b> ${valueStr}<br>`;
+                    }
+                }
+            });
+            
+            html += '</div>';
+            return html;
+        }
+
+        // Load and parse CSV
+        Papa.parse('aramark-jobs.csv', {
+            download: true,
+            header: true,
+            complete: function(results) {
+                const data = results.data;
+                
+                // Filter out rows without coordinates
+                const validData = data.filter(row => {
+                    const lat = parseFloat(row['Geocodio Latitude']);
+                    const lon = parseFloat(row['Geocodio Longitude']);
+                    return !isNaN(lat) && !isNaN(lon);
+                });
+                
+                // Add jitter to duplicates
+                const jitteredData = addJitterToDuplicates(validData);
+                
+                // Calculate center of all points
+                let sumLat = 0, sumLon = 0;
+                jitteredData.forEach(row => {
+                    sumLat += parseFloat(row['Geocodio Latitude']);
+                    sumLon += parseFloat(row['Geocodio Longitude']);
+                });
+                const centerLat = sumLat / jitteredData.length;
+                const centerLon = sumLon / jitteredData.length;
+                map.setView([centerLat, centerLon], 4);
+                
+                // Add markers to map
+                jitteredData.forEach(row => {
+                    const lat = parseFloat(row['Geocodio Latitude']);
+                    const lon = parseFloat(row['Geocodio Longitude']);
+                    
+                    const tooltipText = `${row['title']}<br>${row['location']}`;
+                    const popupHTML = createPopupHTML(row);
+                    
+                    L.circleMarker([lat, lon], {
+                        radius: 5,
+                        color: 'blue',
+                        fillColor: 'blue',
+                        fillOpacity: 0.7,
+                        weight: 1
+                    })
+                    .bindPopup(popupHTML, { maxWidth: 350 })
+                    .bindTooltip(tooltipText)
+                    .addTo(map);
+                });
+            },
+            error: function(error) {
+                console.error('Error loading CSV:', error);
+                alert('Error loading aramark-jobs.csv. Make sure the file is in the same directory as this HTML file.');
+            }
+        });
+    </script>
+</body>
+</html>
